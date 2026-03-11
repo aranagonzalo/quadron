@@ -5,6 +5,7 @@ import { toast } from "sonner";
 
 import { saveTransactions } from "@/src/lib/actions/transactions";
 import { ParsedTransaction } from "@/src/lib/parsers/visa";
+import ImportPreviewModal from "@/src/components/transactions/ImportPreviewModal";
 import { Card } from "@/src/types";
 
 interface Props {
@@ -21,6 +22,8 @@ export default function UploadStatement({ cards, userId, onImported }: Props) {
         cards[0]?.id ?? "",
     );
     const [password, setPassword] = useState("");
+    const [previewTransactions, setPreviewTransactions] = useState<ParsedTransaction[]>([]);
+    const [showPreview, setShowPreview] = useState(false);
 
     useEffect(() => {
         setSelectedCardId((prev) => prev || cards[0]?.id || "");
@@ -67,9 +70,7 @@ export default function UploadStatement({ cards, userId, onImported }: Props) {
                 const json = await res.json();
 
                 if (!res.ok) {
-                    toast.error(json.error ?? "Error al procesar el PDF.", {
-                        id: toastId,
-                    });
+                    toast.error(json.error ?? "Error al procesar el PDF.", { id: toastId });
                     return;
                 }
 
@@ -83,25 +84,38 @@ export default function UploadStatement({ cards, userId, onImported }: Props) {
                     return;
                 }
 
-                const { inserted, skipped } = await saveTransactions(
-                    parsed,
-                    userId,
-                    selectedCardId,
-                );
-
-                toast.success(
-                    `${inserted} transacciones importadas${skipped > 0 ? ` (${skipped} duplicadas omitidas)` : ""}.`,
-                    { id: toastId },
-                );
-                setSelectedFile(null);
-                setPassword("");
-                if (fileInputRef.current) fileInputRef.current.value = "";
-                onImported(inserted);
+                toast.dismiss(toastId);
+                setPreviewTransactions(parsed);
+                setShowPreview(true);
             } catch (err) {
                 console.error(err);
                 toast.error("Error inesperado al cargar.", { id: toastId });
             }
         });
+    }
+
+    async function handleConfirmImport(selected: ParsedTransaction[]) {
+        setShowPreview(false);
+        const toastId = toast.loading("Guardando transacciones...");
+        try {
+            const { inserted, skipped } = await saveTransactions(selected, userId, selectedCardId);
+            toast.success(
+                `${inserted} transacciones importadas${skipped > 0 ? ` (${skipped} duplicadas omitidas)` : ""}.`,
+                { id: toastId },
+            );
+            setSelectedFile(null);
+            setPassword("");
+            setPreviewTransactions([]);
+            if (fileInputRef.current) fileInputRef.current.value = "";
+            onImported(inserted);
+        } catch (err) {
+            console.error(err);
+            toast.error("Error inesperado al guardar.", { id: toastId });
+        }
+    }
+
+    function handleCancelPreview() {
+        setShowPreview(false);
     }
 
     const inputStyle: React.CSSProperties = {
@@ -116,6 +130,13 @@ export default function UploadStatement({ cards, userId, onImported }: Props) {
     };
 
     return (
+        <>
+        <ImportPreviewModal
+            open={showPreview}
+            transactions={previewTransactions}
+            onConfirm={handleConfirmImport}
+            onCancel={handleCancelPreview}
+        />
         <div
             className="rounded-lg p-4 space-y-4"
             style={{
@@ -245,5 +266,6 @@ export default function UploadStatement({ cards, userId, onImported }: Props) {
                 </div>
             </div>
         </div>
+        </>
     );
 }

@@ -1,8 +1,16 @@
 "use server";
 
+import { createHash } from "crypto";
+
 import { ParsedTransaction } from "@/src/lib/parsers/visa";
 import { supabaseAdmin } from "@/src/lib/supabase";
-import { Category, Transaction } from "@/src/types";
+import { Category, Subcategory, Transaction } from "@/src/types";
+
+function txHash(date: string, amount: number, description: string, cardId: string): string {
+    return createHash("sha256")
+        .update(`${date}|${amount}|${description}|${cardId}`)
+        .digest("hex");
+}
 
 export async function getTransactions(
     userId: string,
@@ -15,7 +23,8 @@ export async function getTransactions(
             `
       *,
       card:cards(*),
-      category:categories(*)
+      category:categories(*),
+      subcategory:subcategories(*)
     `,
         )
         .eq("user_id", userId)
@@ -28,6 +37,20 @@ export async function getTransactions(
     }
 
     return (data ?? []) as Transaction[];
+}
+
+export async function getSubcategories(): Promise<Subcategory[]> {
+    const { data, error } = await supabaseAdmin
+        .from("subcategories")
+        .select("*")
+        .order("name", { ascending: true });
+
+    if (error) {
+        console.error("getSubcategories error:", error);
+        return [];
+    }
+
+    return data ?? [];
 }
 
 export async function getCategories(): Promise<Category[]> {
@@ -51,23 +74,22 @@ export async function saveTransactions(
 ): Promise<{ inserted: number; skipped: number }> {
     if (transactions.length === 0) return { inserted: 0, skipped: 0 };
 
-    // Fetch existing transactions for this user+card to detect duplicates
+    // Compute hashes for all candidates
+    const candidates = transactions.map((t) => ({
+        ...t,
+        hash: txHash(t.date, t.amount, t.description, cardId),
+    }));
+
+    // Fetch only existing hashes — single indexed column, no full table scan
     const { data: existing } = await supabaseAdmin
         .from("transactions")
-        .select("date, description, amount, card_id")
+        .select("tx_hash")
         .eq("user_id", userId)
-        .eq("card_id", cardId);
+        .in("tx_hash", candidates.map((c) => c.hash));
 
-    const existingSet = new Set(
-        (existing ?? []).map(
-            (t) => `${t.date}|${t.description}|${t.amount}|${t.card_id}`,
-        ),
-    );
+    const existingHashes = new Set((existing ?? []).map((r) => r.tx_hash));
 
-    const toInsert = transactions.filter((t) => {
-        const key = `${t.date}|${t.description}|${t.amount}|${cardId}`;
-        return !existingSet.has(key);
-    });
+    const toInsert = candidates.filter((c) => !existingHashes.has(c.hash));
 
     if (toInsert.length === 0) {
         return { inserted: 0, skipped: transactions.length };
@@ -83,6 +105,7 @@ export async function saveTransactions(
         month: t.month,
         year: t.year,
         status: "pending",
+        tx_hash: t.hash,
     }));
 
     const { error } = await supabaseAdmin.from("transactions").insert(rows);
@@ -121,13 +144,64 @@ export async function updateCategory(
     id: string,
     categoryId: string,
 ): Promise<boolean> {
+    // Clear subcategory when category changes
     const { error } = await supabaseAdmin
         .from("transactions")
-        .update({ category_id: categoryId })
+        .update({ category_id: categoryId, subcategory_id: null })
         .eq("id", id);
 
     if (error) {
         console.error("updateCategory error:", error);
+        return false;
+    }
+
+    return true;
+}
+
+export async function createTransaction(payload: {
+    user_id: string;
+    card_id: string | null;
+    date: string;
+    description: string;
+    amount: number;
+    type: "gasto" | "abono";
+    category_id: string | null;
+    subcategory_id: string | null;
+    month: number;
+    year: number;
+}): Promise<Transaction> {
+    const hash = txHash(
+        payload.date,
+        payload.amount,
+        payload.description,
+        payload.card_id ?? "efectivo",
+    );
+
+    const { data, error } = await supabaseAdmin
+        .from("transactions")
+        .insert({ ...payload, status: "approved", tx_hash: hash })
+        .select(`*, card:cards(*), category:categories(*), subcategory:subcategories(*)`)
+        .single();
+
+    if (error) {
+        console.error("createTransaction error:", error);
+        throw new Error(error.message);
+    }
+
+    return data as Transaction;
+}
+
+export async function updateSubcategory(
+    id: string,
+    subcategoryId: string | null,
+): Promise<boolean> {
+    const { error } = await supabaseAdmin
+        .from("transactions")
+        .update({ subcategory_id: subcategoryId })
+        .eq("id", id);
+
+    if (error) {
+        console.error("updateSubcategory error:", error);
         return false;
     }
 

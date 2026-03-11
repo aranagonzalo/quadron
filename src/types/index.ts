@@ -28,6 +28,21 @@ export interface Category {
   color: string;
 }
 
+export interface IncomeSource {
+  id: string;
+  user_id: string;
+  month: number;
+  year: number;
+  name: string;
+  amount: number;
+}
+
+export interface Subcategory {
+  id: string;
+  category_id: string;
+  name: string;
+}
+
 export interface Transaction {
   id: string;
   user_id: string;
@@ -37,9 +52,11 @@ export interface Transaction {
   amount: number;
   type: 'gasto' | 'abono';
   category_id?: string;
+  subcategory_id?: string;
   status: 'pending' | 'approved' | 'rejected';
   month: number;
   year: number;
   card?: Card;
   category?: Category;
+  subcategory?: Subcategory;
 }

@@ -6,10 +6,12 @@ import { Dialog, DialogContent } from "@/src/components/ui/dialog";
 import {
     getTransactions,
     updateCategory,
+    updateSubcategory,
     updateStatus,
 } from "@/src/lib/actions/transactions";
-import { Card, Category, Transaction } from "@/src/types";
+import { Card, Category, Subcategory, Transaction } from "@/src/types";
 
+import AddTransactionModal from "./AddTransactionModal";
 import CardManager from "./CardManager";
 import UploadStatement from "./UploadStatement";
 
@@ -18,6 +20,7 @@ type FilterTab = "all" | "pending" | "approved" | "rejected";
 interface Props {
     initialTransactions: Transaction[];
     categories: Category[];
+    subcategories: Subcategory[];
     cards: Card[];
     userId: string;
     month: number;
@@ -51,6 +54,7 @@ function formatDate(dateStr: string): string {
 export default function TransactionsClient({
     initialTransactions,
     categories,
+    subcategories,
     cards: initialCards,
     userId,
     month,
@@ -63,6 +67,7 @@ export default function TransactionsClient({
     const [search, setSearch] = useState("");
     const [selected, setSelected] = useState<Set<string>>(new Set());
     const [showCardManager, setShowCardManager] = useState(false);
+    const [showAddTransaction, setShowAddTransaction] = useState(false);
     const [cardFilter, setCardFilter] = useState<string>("all");
     const [, startTransition] = useTransition();
 
@@ -189,18 +194,37 @@ export default function TransactionsClient({
     }
 
     function handleCategoryChange(id: string, categoryId: string) {
-        const category =
-            categories.find((c) => c.id === categoryId) ?? undefined;
+        const category = categories.find((c) => c.id === categoryId) ?? undefined;
 
-        // Optimistic update
+        // Clear subcategory when category changes
         setTransactions((prev) =>
             prev.map((t) =>
-                t.id === id ? { ...t, category_id: categoryId, category } : t,
+                t.id === id
+                    ? { ...t, category_id: categoryId, category, subcategory_id: undefined, subcategory: undefined }
+                    : t,
             ),
         );
 
         startTransition(async () => {
             await updateCategory(id, categoryId);
+        });
+    }
+
+    function handleSubcategoryChange(id: string, subcategoryId: string | null) {
+        const subcategory = subcategoryId
+            ? subcategories.find((s) => s.id === subcategoryId)
+            : undefined;
+
+        setTransactions((prev) =>
+            prev.map((t) =>
+                t.id === id
+                    ? { ...t, subcategory_id: subcategoryId ?? undefined, subcategory }
+                    : t,
+            ),
+        );
+
+        startTransition(async () => {
+            await updateSubcategory(id, subcategoryId);
         });
     }
 
@@ -223,23 +247,38 @@ export default function TransactionsClient({
                         Gestiona tus movimientos del mes
                     </p>
                 </div>
-                <button
-                    onClick={() => setShowCardManager((v) => !v)}
-                    className="shrink-0 rounded-md px-3 py-1.5 text-sm font-medium transition"
-                    style={{
-                        background: "var(--color-panel-bg)",
-                        border: "1px solid var(--color-border)",
-                        color: "var(--color-text-primary)",
-                    }}
-                    onMouseEnter={(e) => {
-                        (e.currentTarget as HTMLButtonElement).style.background = "var(--color-border-subtle)";
-                    }}
-                    onMouseLeave={(e) => {
-                        (e.currentTarget as HTMLButtonElement).style.background = "var(--color-panel-bg)";
-                    }}
-                >
-                    {showCardManager ? "Ocultar tarjetas" : "Mis tarjetas"}
-                </button>
+                <div className="flex gap-2">
+                    <button
+                        onClick={() => setShowAddTransaction(true)}
+                        className="shrink-0 rounded-md px-3 py-1.5 text-sm font-medium text-white transition"
+                        style={{ background: "var(--color-accent)" }}
+                        onMouseEnter={(e) => {
+                            (e.currentTarget as HTMLButtonElement).style.background = "var(--color-accent-hover)";
+                        }}
+                        onMouseLeave={(e) => {
+                            (e.currentTarget as HTMLButtonElement).style.background = "var(--color-accent)";
+                        }}
+                    >
+                        + Registrar gasto
+                    </button>
+                    <button
+                        onClick={() => setShowCardManager((v) => !v)}
+                        className="shrink-0 rounded-md px-3 py-1.5 text-sm font-medium transition"
+                        style={{
+                            background: "var(--color-panel-bg)",
+                            border: "1px solid var(--color-border)",
+                            color: "var(--color-text-primary)",
+                        }}
+                        onMouseEnter={(e) => {
+                            (e.currentTarget as HTMLButtonElement).style.background = "var(--color-border-subtle)";
+                        }}
+                        onMouseLeave={(e) => {
+                            (e.currentTarget as HTMLButtonElement).style.background = "var(--color-panel-bg)";
+                        }}
+                    >
+                        {showCardManager ? "Ocultar tarjetas" : "Mis tarjetas"}
+                    </button>
+                </div>
             </div>
 
             {/* Card Manager Modal */}
@@ -252,6 +291,19 @@ export default function TransactionsClient({
                     />
                 </DialogContent>
             </Dialog>
+
+            {/* Add Transaction Modal */}
+            <AddTransactionModal
+                open={showAddTransaction}
+                onClose={() => setShowAddTransaction(false)}
+                onCreated={(t) => setTransactions((prev) => [t, ...prev])}
+                userId={userId}
+                cards={cards}
+                categories={categories}
+                subcategories={subcategories}
+                defaultMonth={month}
+                defaultYear={year}
+            />
 
             {/* Upload section */}
             <UploadStatement
@@ -466,6 +518,9 @@ export default function TransactionsClient({
                                     Categoría
                                 </th>
                                 <th className="px-3 py-2.5 text-xs font-semibold" style={{ color: "var(--color-text-muted)" }}>
+                                    Subcategoría
+                                </th>
+                                <th className="px-3 py-2.5 text-xs font-semibold" style={{ color: "var(--color-text-muted)" }}>
                                     Estado
                                 </th>
                                 <th className="px-3 py-2.5 text-xs font-semibold" style={{ color: "var(--color-text-muted)" }}>
@@ -477,7 +532,7 @@ export default function TransactionsClient({
                             {filtered.length === 0 ? (
                                 <tr>
                                     <td
-                                        colSpan={8}
+                                        colSpan={9}
                                         className="py-12 text-center text-sm"
                                         style={{ color: "var(--color-text-muted)" }}
                                     >
@@ -492,6 +547,7 @@ export default function TransactionsClient({
                                         key={t.id}
                                         transaction={t}
                                         categories={categories}
+                                        subcategories={subcategories}
                                         isSelected={selected.has(t.id)}
                                         onToggle={() => toggleOne(t.id)}
                                         onStatusChange={(status) =>
@@ -499,6 +555,9 @@ export default function TransactionsClient({
                                         }
                                         onCategoryChange={(catId) =>
                                             handleCategoryChange(t.id, catId)
+                                        }
+                                        onSubcategoryChange={(subId) =>
+                                            handleSubcategoryChange(t.id, subId)
                                         }
                                     />
                                 ))
@@ -567,17 +626,21 @@ function StatCard({
 function TransactionRow({
     transaction: t,
     categories,
+    subcategories,
     isSelected,
     onToggle,
     onStatusChange,
     onCategoryChange,
+    onSubcategoryChange,
 }: {
     transaction: Transaction;
     categories: Category[];
+    subcategories: Subcategory[];
     isSelected: boolean;
     onToggle: () => void;
     onStatusChange: (status: "approved" | "rejected" | "pending") => void;
     onCategoryChange: (categoryId: string) => void;
+    onSubcategoryChange: (subcategoryId: string | null) => void;
 }) {
     return (
         <tr
@@ -682,6 +745,33 @@ function TransactionRow({
                         ))}
                     </select>
                 </div>
+            </td>
+
+            {/* Subcategory */}
+            <td className="px-3 py-2.5">
+                {t.category_id ? (
+                    <select
+                        value={t.subcategory_id ?? ""}
+                        onChange={(e) => onSubcategoryChange(e.target.value || null)}
+                        className="rounded py-0 pl-0 pr-6 text-xs focus:ring-0 cursor-pointer"
+                        style={{
+                            background: "transparent",
+                            border: "none",
+                            color: "var(--color-text-muted)",
+                        }}
+                    >
+                        <option value="">—</option>
+                        {subcategories
+                            .filter((s) => s.category_id === t.category_id)
+                            .map((s) => (
+                                <option key={s.id} value={s.id}>
+                                    {s.name}
+                                </option>
+                            ))}
+                    </select>
+                ) : (
+                    <span className="text-xs" style={{ color: "var(--color-text-muted)" }}>—</span>
+                )}
             </td>
 
             {/* Status badge */}
