@@ -1,7 +1,7 @@
 export const runtime = "nodejs";
 
 import { NextRequest, NextResponse } from "next/server";
-import path from "path";
+import { PDFExtract } from "pdf.js-extract";
 
 import {
     isSavingsFormat,
@@ -11,40 +11,28 @@ import {
 import { parseVisaText } from "@/src/lib/parsers/visa";
 
 async function extractPDFItems(
-    buffer: Uint8Array,
-    password?: string,
+    buffer: Buffer,
+    password: string,
 ): Promise<PDFItem[]> {
-    const pdfjsLib = await import("pdfjs-dist/legacy/build/pdf.mjs");
-    const workerPath = path.resolve(
-        "node_modules/pdfjs-dist/legacy/build/pdf.worker.mjs",
-    );
-    pdfjsLib.GlobalWorkerOptions.workerSrc = `file://${workerPath}`;
-
-    const pdf = await pdfjsLib.getDocument({
-        data: buffer,
-        password: password || "",
-        useWorkerFetch: false,
-        isEvalSupported: false,
-        useSystemFonts: true,
-        verbosity: 0,
-    }).promise;
+    const pdfExtract = new PDFExtract();
+    const data = await pdfExtract.extractBuffer(buffer, { password });
 
     const allItems: PDFItem[] = [];
-
-    for (let i = 1; i <= pdf.numPages; i++) {
-        const page = await pdf.getPage(i);
-        const content = await page.getTextContent();
-        for (const item of content.items) {
-            if (!("str" in item) || !item.str.trim()) continue;
+    for (const page of data.pages || []) {
+        for (const item of page.content || []) {
+            if (!item.str?.trim()) continue;
             allItems.push({
                 str: item.str,
-                x: Math.round((item as { transform: number[] }).transform[4]),
-                y: Math.round((item as { transform: number[] }).transform[5]),
+                x: Math.round(item.x),
+                y: Math.round(item.y),
             });
         }
     }
-
     return allItems;
+}
+
+function err422(message: string) {
+    return NextResponse.json({ error: message }, { status: 422 });
 }
 
 export async function POST(req: NextRequest) {
@@ -66,33 +54,35 @@ export async function POST(req: NextRequest) {
             );
         }
 
-        const uint8Array = new Uint8Array(await file.arrayBuffer());
+        const buffer = Buffer.from(await file.arrayBuffer());
 
+        // Phase 1: attempt without password to determine if PDF is encrypted.
+        // If this succeeds the PDF is not encrypted (or password is ignored).
+        // If it throws, the PDF requires a password.
         let items: PDFItem[];
+        let isEncrypted = false;
+
         try {
-            items = await extractPDFItems(uint8Array, password);
-        } catch (err: unknown) {
-            const name = (err as Record<string, unknown>)?.name;
-            const code = (err as Record<string, unknown>)?.code;
-            const msg = err instanceof Error ? err.message : String(err);
-            const isPasswordError =
-                name === "PasswordException" ||
-                code === 1 ||
-                code === 2 ||
-                msg.toLowerCase().includes("password") ||
-                msg.toLowerCase().includes("incorrect password");
-            if (isPasswordError) {
-                return NextResponse.json(
-                    {
-                        error:
-                            code === 2 || msg.includes("Incorrect")
-                                ? "Contraseña incorrecta."
-                                : "El PDF está protegido. Ingresa la contraseña.",
-                    },
-                    { status: 200 },
-                );
+            items = await extractPDFItems(buffer, "");
+        } catch {
+            isEncrypted = true;
+            items = [];
+        }
+
+        if (isEncrypted) {
+            if (!password) {
+                return err422("El PDF está protegido. Ingresa la contraseña.");
             }
-            throw err;
+            // Phase 2: try with the provided password.
+            try {
+                items = await extractPDFItems(buffer, password);
+            } catch {
+                return err422("Contraseña incorrecta.");
+            }
+            // Some implementations return empty content instead of throwing on wrong password.
+            if (items.length === 0) {
+                return err422("Contraseña incorrecta.");
+            }
         }
 
         if (items.length === 0) {
@@ -105,7 +95,6 @@ export async function POST(req: NextRequest) {
             );
         }
 
-        // Detect format and use the appropriate parser
         let transactions;
         if (isSavingsFormat(items)) {
             transactions = parseSavingsItems(items);
